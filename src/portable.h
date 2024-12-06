@@ -1,196 +1,150 @@
-std::wstring QuoteSpaceIfNeeded(const std::wstring &str)
-{
-    if (str.find(L' ') == std::wstring::npos)
-        return std::move(str);
+#ifndef PORTABLE_H_
+#define PORTABLE_H_
 
-    std::wstring escaped(L"\"");
-    for (auto c : str)
-    {
-        if (c == L'"')
-            escaped += L'"';
-        escaped += c;
+// Construct new command line with portable mode.
+std::wstring GetCommand(LPWSTR param) {
+  std::vector<std::wstring> args;
+
+  int argc;
+  LPWSTR* argv = CommandLineToArgvW(param, &argc);
+
+  int insert_pos = 0;
+  for (int i = 0; i < argc; ++i) {
+    if (std::wstring(argv[i]).find(L"--") != std::wstring::npos ||
+        std::wstring(argv[i]).find(L"--single-argument") !=
+            std::wstring::npos) {
+      break;
     }
-    escaped += L'"';
-    return std::move(escaped);
-}
+    insert_pos = i;
+  }
+  for (int i = 0; i < argc; ++i) {
+    // Preserve former arguments.
+    if (i)
+      args.push_back(argv[i]);
 
-std::wstring JoinArgsString(std::vector<std::wstring> lines, const std::wstring &delimiter)
-{
-    std::wstring text;
-    bool first = true;
-    for (auto &line : lines)
-    {
-        if (!first)
-            text += delimiter;
-        else
-            first = false;
-        text += QuoteSpaceIfNeeded(line);
-    }
-    return text;
-}
+    // Append new arguments.
+    if (i == insert_pos) {
+      args.push_back(L"--portable");
 
-// 这段代码应该可以废弃了……
-bool IsExistsPortable()
-{
-    std::wstring path = GetAppDir() + L"\\portable";
-    if (PathFileExists(path.data()))
-    {
-        return true;
-    }
-    return false;
-}
+      args.push_back(L"--disable-features=WinSboxNoFakeGdiInit");
 
-bool IsNeedPortable()
-{
-    return true;
-    static bool need_portable = IsExistsPortable();
-    return need_portable;
-}
+      auto userdata = GetUserDataDir();
+      if (!userdata.empty()) {
+        args.push_back(L"--user-data-dir=" + userdata);
+      }
 
-// 尝试读取 ini 文件
-bool IsIniExist()
-{
-    std::wstring path = GetAppDir() + L"\\chrome++.ini";
-    if (PathFileExists(path.data()))
-    {
-        return true;
-    }
-    return false;
-}
+      auto diskcache = GetDiskCacheDir();
+      if (!diskcache.empty()) {
+        args.push_back(L"--disk-cache-dir=" + diskcache);
+      }
 
-// 如果 ini 存在，读取 UserData 并配置，否则使用默认值
-std::wstring GetUserDataDir()
-{
-    if (IsIniExist()) {
-        std::wstring IniDir = GetAppDir() + L"\\chrome++.ini";
-
-        if (!PathFileExists(IniDir.c_str()))
-        {
-            return GetAppDir() + L"\\..\\Data";
-        }
-
-        TCHAR UserDataBuffer[MAX_PATH];
-        ::GetPrivateProfileStringW(L"General", L"DataDir", L"", UserDataBuffer, MAX_PATH, IniDir.c_str());
-        std::wstring expandedPath = ExpandEnvironmentPath(UserDataBuffer);
-
-        // 替换 %app%
-        ReplaceStringInPlace(expandedPath, L"%app%", GetAppDir());
-        wcscpy(UserDataBuffer, expandedPath.c_str());
-
-        return std::wstring(UserDataBuffer);
-
-    } else {
-        std::wstring path = GetAppDir() + L"\\..\\Data";
-        TCHAR temp[MAX_PATH];
-        ::PathCanonicalize(temp, path.data());
-        return temp;
-    }
-}
-
-// 如果 ini 存在，读取 DiskCache 并配置，否则使用默认值
-std::wstring GetDiskCacheDir()
-{
-    if (IsIniExist()) {
-        std::wstring IniDir = GetAppDir() + L"\\chrome++.ini";
-
-        if (!PathFileExists(IniDir.c_str()))
-        {
-            return GetAppDir() + L"\\..\\Cache";
-        }
-
-        TCHAR CacheDirBuffer[MAX_PATH];
-        ::GetPrivateProfileStringW(L"General", L"CacheDir", L"", CacheDirBuffer, MAX_PATH, IniDir.c_str());
-        std::wstring expandedPath = ExpandEnvironmentPath(CacheDirBuffer);
-
-        // 替换 %app%
-        ReplaceStringInPlace(expandedPath, L"%app%", GetAppDir());
-        wcscpy(CacheDirBuffer, expandedPath.c_str());
-
-        return std::wstring(CacheDirBuffer);
-
-    } else {
-        std::wstring path = GetAppDir() + L"\\..\\Cache";
-        TCHAR temp[MAX_PATH];
-        ::PathCanonicalize(temp, path.data());
-        return temp;
-    }
-}
-
-// 构造新命令行
-std::wstring GetCommand(LPWSTR param)
-{
-    std::vector<std::wstring> args;
-
-    int argc;
-    LPWSTR *argv = CommandLineToArgvW(param, &argc);
-
-    int insert_pos = 0;
-    for (int i = 0; i < argc; i++)
-    {
-        if (wcscmp(argv[i], L"--") == 0)
-        {
+      // Get the command line and append parameters
+      // Intercept and split the parameters starting with each --,
+      // and then args.push_back multiple times
+      // Repeat the above process until the -- sign no longer exists in the
+      // string
+      {
+        auto cr_command_line = GetCrCommandLine();
+        std::wstring temp = cr_command_line;
+        while (true) {
+          auto pos = temp.find(L"--");
+          if (pos == std::wstring::npos) {
             break;
-        }
-        if (wcscmp(argv[i], L"--single-argument") == 0)
-        {
-            break;
-        }
-        insert_pos = i;
-    }
-    for (int i = 0; i < argc; i++)
-    {
-        // 保留原来参数
-        if (i)
-            args.push_back(argv[i]);
-
-        // 追加参数
-        if (i == insert_pos)
-        {
-            args.push_back(L"--portable");
-
-            args.push_back(L"--no-first-run");
-
-            args.push_back(L"--disable-features=RendererCodeIntegrity,FlashDeprecationWarning");
-
-            // if (IsNeedPortable())
-            {
-                auto diskcache = GetDiskCacheDir();
-
-                wchar_t temp[MAX_PATH];
-                wsprintf(temp, L"--disk-cache-dir=%s", diskcache.c_str());
-                args.push_back(temp);
+          } else {
+            auto pos2 = temp.find(L" --", pos);
+            if (pos2 == std::wstring::npos) {
+              args.push_back(temp);
+              break;
+            } else {
+              args.push_back(temp.substr(pos, pos2 - pos));
+              temp = temp.substr(0, pos) + temp.substr(pos2 + 1);
             }
-            {
-                auto userdata = GetUserDataDir();
-
-                wchar_t temp[MAX_PATH];
-                wsprintf(temp, L"--user-data-dir=%s", userdata.c_str());
-                args.push_back(temp);
-            }
+          }
         }
+      }
     }
-    LocalFree(argv);
+  }
+  LocalFree(argv);
 
-    return JoinArgsString(args, L" ");
+  return JoinArgsString(args, L" ");
 }
 
-void Portable(LPWSTR param)
-{
-    wchar_t path[MAX_PATH];
-    ::GetModuleFileName(NULL, path, MAX_PATH);
-
-    std::wstring args = GetCommand(param);
-
-    SHELLEXECUTEINFO sei = {0};
-    sei.cbSize = sizeof(SHELLEXECUTEINFO);
-    sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
-    sei.lpVerb = L"open";
-    sei.lpFile = path;
-    sei.nShow = SW_SHOWNORMAL;
-
-    sei.lpParameters = args.c_str();
-    if (ShellExecuteEx(&sei))
-    {
-        ExitProcess(0);
-    }
+HANDLE hMutex = nullptr;
+bool IsFirstRun() {
+  DWORD pid = GetCurrentProcessId();
+  std::wstring mutex_name =
+      L"Global\\ChromePlusFirstRunMutex" + std::to_wstring(pid);
+  hMutex = CreateMutexW(nullptr, TRUE, mutex_name.c_str());
+  if (hMutex == nullptr || GetLastError() == ERROR_ALREADY_EXISTS) {
+    return false;
+  }
+  return true;
 }
+
+void LaunchCommands(const std::wstring& get_commands,
+                    int show_command,
+                    std::vector<HANDLE>* program_handles) {
+  auto commands = StringSplit(
+      get_commands, L';',
+      L"");  // Quotes should not be used as they can cause errors with paths
+             // that contain spaces. Since semicolons rarely appear in names and
+             // commands, they are used as delimiters.
+  if (commands.empty()) {
+    return;
+  }
+  for (const auto& command : commands) {
+    std::wstring expanded_path = ExpandEnvironmentPath(command);
+    ReplaceStringInPlace(expanded_path, L"%app%", GetAppDir());
+    HANDLE handle = RunExecute(expanded_path.c_str(), show_command);
+    if (program_handles != nullptr && handle != nullptr) {
+      program_handles->push_back(handle);
+    }
+  }
+}
+
+void KillLaunchOnExit(std::vector<HANDLE>* program_handles) {
+  if (IsKillLaunchOnExit() && program_handles != nullptr) {
+    for (auto handle : *program_handles) {
+      TerminateProcess(handle, 0);
+    }
+  }
+}
+
+void Portable(LPWSTR param) {
+  bool first_run = IsFirstRun();
+  auto launch_on_startup = GetLaunchOnStartup();
+  auto launch_on_exit = GetLaunchOnExit();
+  std::vector<HANDLE> program_handles = {nullptr};
+
+  if (first_run && !launch_on_startup.empty()) {
+    LaunchCommands(launch_on_startup, SW_SHOW, &program_handles);
+  }
+
+  wchar_t path[MAX_PATH];
+  ::GetModuleFileName(nullptr, path, MAX_PATH);
+  std::wstring args = GetCommand(param);
+
+  SHELLEXECUTEINFO sei = {0};
+  sei.cbSize = sizeof(SHELLEXECUTEINFO);
+  sei.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_FLAG_NO_UI;
+  sei.lpVerb = L"open";
+  sei.lpFile = path;
+  sei.nShow = SW_SHOWNORMAL;
+  sei.lpParameters = args.c_str();
+
+  if (ShellExecuteEx(&sei)) {
+    if (first_run && !launch_on_exit.empty()) {
+      // `WaitForSingleObject` causes IDM floating bar not to be displayed.
+      // Hence, end users should be reminded to avoid using this feature until a
+      // better method is implemented. See:
+      // https://github.com/Bush2021/chrome_plus/issues/130
+      WaitForSingleObject(sei.hProcess, INFINITE);
+      CloseHandle(hMutex);
+      KillLaunchOnExit(&program_handles);
+      LaunchCommands(launch_on_exit, SW_HIDE, nullptr);
+    }
+    ExitProcess(0);
+  }
+}
+
+#endif  // PORTABLE_H_
